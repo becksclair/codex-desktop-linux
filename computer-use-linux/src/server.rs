@@ -668,34 +668,31 @@ impl ComputerUseLinux {
             match self.ensure_portal_keyboard_session().await {
                 Ok(Some(session)) => {
                     match run_kde_clipboard_paste_text(&session, &params.text).await {
-                        Ok(()) => {
+                        Ok(message) => {
                             return Json(successful_action_with_focus(
                                 "type_text",
-                                "Action pasted through KDE clipboard integration.",
+                                &message,
                                 received,
                                 focus,
                             ));
                         }
                         Err(error) => {
-                            self.clear_portal_keyboard_session();
-                            return Json(action_result_with_focus(
-                                "type_text",
-                                Err(error),
-                                received,
-                                focus,
-                            ));
+                            if error.clear_portal_keyboard_session {
+                                self.clear_portal_keyboard_session();
+                            }
+                            if !error.can_fallback_to_ydotool {
+                                return Json(action_result_with_focus(
+                                    "type_text",
+                                    Err(error.message),
+                                    received,
+                                    focus,
+                                ));
+                            }
                         }
                     }
                 }
                 Ok(None) => {}
-                Err(error) => {
-                    return Json(action_result_with_focus(
-                        "type_text",
-                        Err(format!("{error:#}")),
-                        received,
-                        focus,
-                    ));
-                }
+                Err(_) => {}
             }
         }
         if self.should_prefer_portal_keyboard_backend() {
@@ -2039,29 +2036,58 @@ fn run_ydotool_type_text(text: &str) -> std::result::Result<Output, String> {
     }
 }
 
+const EVDEV_KEY_LEFTCTRL: i32 = 29;
+const EVDEV_KEY_V: i32 = 47;
+const KDE_CLIPBOARD_RESTORE_DELAY_MS: u64 = 500;
+
+#[derive(Debug)]
+struct KdeClipboardPasteError {
+    message: String,
+    can_fallback_to_ydotool: bool,
+    clear_portal_keyboard_session: bool,
+}
+
+impl KdeClipboardPasteError {
+    fn before_text_input(message: String) -> Self {
+        Self {
+            message,
+            can_fallback_to_ydotool: true,
+            clear_portal_keyboard_session: false,
+        }
+    }
+
+    fn after_portal_input(message: String) -> Self {
+        Self {
+            message,
+            can_fallback_to_ydotool: false,
+            clear_portal_keyboard_session: true,
+        }
+    }
+}
+
 async fn run_kde_clipboard_paste_text(
     session: &PortalKeyboardSession,
     text: &str,
-) -> std::result::Result<(), String> {
-    let previous = kde_clipboard_contents()?;
-    kde_set_clipboard_contents(text)?;
+) -> std::result::Result<String, KdeClipboardPasteError> {
+    let previous = kde_clipboard_contents().map_err(KdeClipboardPasteError::before_text_input)?;
+    kde_set_clipboard_contents(text).map_err(KdeClipboardPasteError::before_text_input)?;
 
-    let paste_result = press_keycode_chord(session, &[29], 47)
+    let paste_result = press_keycode_chord(session, &[EVDEV_KEY_LEFTCTRL], EVDEV_KEY_V)
         .await
         .map_err(|error| format!("{error:#}"));
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(KDE_CLIPBOARD_RESTORE_DELAY_MS)).await;
     let restore_result = kde_set_clipboard_contents(&previous);
 
     match (paste_result, restore_result) {
-        (Ok(_), Ok(_)) => Ok(()),
-        (Err(error), Ok(_)) => Err(error),
-        (Ok(_), Err(restore_error)) => Err(format!(
-            "text was pasted, but previous KDE clipboard contents could not be restored: {restore_error}"
+        (Ok(_), Ok(_)) => Ok("Action pasted through KDE clipboard integration.".to_string()),
+        (Err(error), Ok(_)) => Err(KdeClipboardPasteError::after_portal_input(error)),
+        (Ok(_), Err(restore_error)) => Ok(format!(
+            "Action pasted through KDE clipboard integration. Warning: previous KDE clipboard contents could not be restored: {restore_error}"
         )),
-        (Err(error), Err(restore_error)) => Err(format!(
+        (Err(error), Err(restore_error)) => Err(KdeClipboardPasteError::after_portal_input(format!(
             "{error}; previous KDE clipboard contents could not be restored: {restore_error}"
-        )),
+        ))),
     }
 }
 
