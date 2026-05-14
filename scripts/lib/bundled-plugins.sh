@@ -682,10 +682,22 @@ if (includeBrowser) {
 
 if (includeChrome) {
   const chrome = sourcePlugins.find((plugin) => plugin.name === "chrome");
-  if (chrome == null) {
-    throw new Error("Bundled marketplace does not contain chrome plugin");
+  if (chrome != null) {
+    plugins.push(chrome);
+  } else {
+    plugins.push({
+      name: "chrome",
+      source: {
+        source: "local",
+        path: "./plugins/chrome",
+      },
+      policy: {
+        installation: "AVAILABLE",
+        authentication: "ON_INSTALL",
+      },
+      category: "Productivity",
+    });
   }
-  plugins.push(chrome);
 }
 
 if (includeComputerUse) {
