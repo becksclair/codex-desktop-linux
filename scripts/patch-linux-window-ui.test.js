@@ -67,6 +67,7 @@ const {
 const {
   buildInfo,
   packageProfile,
+  sourceInfo,
 } = require("./lib/build-info.js");
 const {
   applyBrowserAnnotationScreenshotPatch,
@@ -244,6 +245,8 @@ test("build info captures DMG hash, features, distro profile, and source revisio
       env: {
         CODEX_LINUX_SOURCE_COMMIT: "abcdef1234567890",
         CODEX_LINUX_SOURCE_BRANCH: "main",
+        CODEX_LINUX_SOURCE_REMOTE: "https://ghp_secret-token@github.com/example/codex-desktop-linux.git",
+        SOURCE_DATE_EPOCH: "1710000000",
       },
       linuxTarget: detectLinuxTargetContext({
         osReleaseFields: {
@@ -256,12 +259,42 @@ test("build info captures DMG hash, features, distro profile, and source revisio
       }),
     });
 
+    assert.equal(info.generatedAt, new Date(1710000000 * 1000).toISOString());
+    assert.equal(info.upstreamDmg.path, undefined);
     assert.equal(info.upstreamDmg.sha256, "e33df8d941faed4fdc3bb688fea70572931e81a6e0c2603b810338177148dfa2");
     assert.equal(info.upstreamDmg.appVersion, "1.2.3");
     assert.equal(info.source.shortCommit, "abcdef123456");
+    assert.equal(info.source.remote, "https://github.com/example/codex-desktop-linux.git");
     assert.equal(info.packageProfile.id, "debian-family");
     assert.equal(info.packageProfile.packageManager, "apt");
     assert.deepEqual(info.linuxFeatures.enabled, ["read-aloud", "zed-opener"]);
+    assert.equal(info.linuxFeatures.configPath, undefined);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("build info sanitizes staged source metadata from packaged update-builder", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-build-info-staged-source-"));
+  try {
+    const sourceInfoDir = path.join(tempRoot, ".codex-linux");
+    fs.mkdirSync(sourceInfoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sourceInfoDir, "source-info.json"),
+      JSON.stringify({
+        commit: "0123456789abcdef",
+        shortCommit: "0123456789ab",
+        branch: "main",
+        remote: "https://user:secret@example.com/org/repo.git",
+        sourceInfoPath: "/home/builder/codex/.codex-linux/source-info.json",
+        provenance: "packaged-update-builder",
+      }),
+      "utf8",
+    );
+
+    const info = sourceInfo(tempRoot, {});
+    assert.equal(info.remote, "https://example.com/org/repo.git");
+    assert.equal(info.sourceInfoPath, undefined);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

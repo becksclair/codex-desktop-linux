@@ -438,17 +438,52 @@ function git(args) {
   return value.length > 0 ? value : null;
 }
 
+function isoTimestamp() {
+  const rawEpoch = process.env.SOURCE_DATE_EPOCH?.trim();
+  if (rawEpoch) {
+    const epochSeconds = Number(rawEpoch);
+    if (Number.isFinite(epochSeconds) && epochSeconds >= 0) {
+      return new Date(Math.trunc(epochSeconds) * 1000).toISOString();
+    }
+  }
+  return new Date().toISOString();
+}
+
+function sanitizeGitRemoteUrl(remote) {
+  if (remote == null) {
+    return null;
+  }
+  const value = String(remote).trim();
+  if (value.length === 0 || path.isAbsolute(value) || value.startsWith("./") || value.startsWith("../")) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol === "file:") {
+      return null;
+    }
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      url.username = "";
+      url.password = "";
+      return url.toString();
+    }
+  } catch {
+    return value;
+  }
+  return value;
+}
+
 const commit = process.env.CODEX_LINUX_SOURCE_COMMIT?.trim() || git(["rev-parse", "HEAD"]);
 const status = git(["status", "--porcelain"]);
 const info = {
   commit,
   shortCommit: commit == null ? null : commit.slice(0, 12),
   branch: process.env.CODEX_LINUX_SOURCE_BRANCH?.trim() || git(["branch", "--show-current"]),
-  remote: process.env.CODEX_LINUX_SOURCE_REMOTE?.trim() || git(["remote", "get-url", "origin"]),
+  remote: sanitizeGitRemoteUrl(process.env.CODEX_LINUX_SOURCE_REMOTE?.trim() || git(["remote", "get-url", "origin"])),
   describe: process.env.CODEX_LINUX_SOURCE_DESCRIBE?.trim() || git(["describe", "--always", "--dirty", "--tags"]),
   dirty: status == null ? null : status.length > 0,
   provenance: "packaged-update-builder",
-  capturedAt: new Date().toISOString(),
+  capturedAt: isoTimestamp(),
 };
 
 fs.mkdirSync(path.dirname(infoFile), { recursive: true });

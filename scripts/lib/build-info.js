@@ -10,7 +10,6 @@ const {
 } = require("./linux-target-context.js");
 const {
   enabledLinuxFeatureIds,
-  linuxFeaturesConfigPath,
   linuxFeaturesRoot,
 } = require("./linux-features.js");
 
@@ -34,6 +33,48 @@ function readJsonFile(filePath) {
   }
 }
 
+function isoTimestamp(env = process.env) {
+  const rawEpoch = env.SOURCE_DATE_EPOCH?.trim();
+  if (rawEpoch) {
+    const epochSeconds = Number(rawEpoch);
+    if (Number.isFinite(epochSeconds) && epochSeconds >= 0) {
+      return new Date(Math.trunc(epochSeconds) * 1000).toISOString();
+    }
+  }
+  return new Date().toISOString();
+}
+
+function sanitizeGitRemoteUrl(remote) {
+  if (remote == null) {
+    return null;
+  }
+  const value = String(remote).trim();
+  if (value.length === 0 || path.isAbsolute(value) || value.startsWith("./") || value.startsWith("../")) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol === "file:") {
+      return null;
+    }
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      url.username = "";
+      url.password = "";
+      return url.toString();
+    }
+  } catch {
+    return value;
+  }
+  return value;
+}
+
+function sanitizeSourceInfo(info) {
+  const { sourceInfoPath, ...sanitized } = info;
+  void sourceInfoPath;
+  sanitized.remote = sanitizeGitRemoteUrl(sanitized.remote);
+  return sanitized;
+}
+
 function sourceInfoFromGit(repoDir, env = process.env) {
   const overrideCommit = env.CODEX_LINUX_SOURCE_COMMIT?.trim();
   const insideWorkTree = runGit(repoDir, ["rev-parse", "--is-inside-work-tree"]) === "true";
@@ -47,7 +88,7 @@ function sourceInfoFromGit(repoDir, env = process.env) {
     commit,
     shortCommit: commit == null ? null : commit.slice(0, 12),
     branch: env.CODEX_LINUX_SOURCE_BRANCH?.trim() || runGit(repoDir, ["branch", "--show-current"]),
-    remote: env.CODEX_LINUX_SOURCE_REMOTE?.trim() || runGit(repoDir, ["remote", "get-url", "origin"]),
+    remote: sanitizeGitRemoteUrl(env.CODEX_LINUX_SOURCE_REMOTE?.trim() || runGit(repoDir, ["remote", "get-url", "origin"])),
     describe: env.CODEX_LINUX_SOURCE_DESCRIBE?.trim() || runGit(repoDir, ["describe", "--always", "--dirty", "--tags"]),
     dirty: status != null && status.length > 0,
   };
@@ -58,9 +99,8 @@ function sourceInfo(repoDir, env = process.env) {
   const staged = readJsonFile(sourceInfoPath);
   if (staged != null && typeof staged === "object" && !Array.isArray(staged)) {
     return {
-      ...staged,
+      ...sanitizeSourceInfo(staged),
       provenance: staged.provenance ?? "packaged-update-builder",
-      sourceInfoPath,
     };
   }
   const gitInfo = sourceInfoFromGit(repoDir, env);
@@ -71,7 +111,7 @@ function sourceInfo(repoDir, env = process.env) {
     commit: env.CODEX_LINUX_SOURCE_COMMIT?.trim() || null,
     shortCommit: env.CODEX_LINUX_SOURCE_COMMIT?.trim()?.slice(0, 12) || null,
     branch: env.CODEX_LINUX_SOURCE_BRANCH?.trim() || null,
-    remote: env.CODEX_LINUX_SOURCE_REMOTE?.trim() || null,
+    remote: sanitizeGitRemoteUrl(env.CODEX_LINUX_SOURCE_REMOTE?.trim() || null),
     describe: env.CODEX_LINUX_SOURCE_DESCRIBE?.trim() || null,
     dirty: null,
     provenance: "unknown",
@@ -180,28 +220,27 @@ function buildInfo(options) {
   const dmgPath = path.resolve(options.dmgPath);
   const appDir = path.resolve(options.appDir);
   const featuresRoot = linuxFeaturesRoot({ featuresRoot: options.featuresRoot });
+  const env = options.env ?? process.env;
   const target = options.linuxTarget ?? detectLinuxTargetContext();
   return {
     schemaVersion: 1,
-    generatedAt: new Date().toISOString(),
+    generatedAt: isoTimestamp(env),
     appIdentity: {
       id: options.appId,
       displayName: options.appDisplayName,
     },
     upstreamDmg: {
-      path: dmgPath,
       fileName: path.basename(dmgPath),
       sizeBytes: fs.statSync(dmgPath).size,
       sha256: sha256File(dmgPath),
       appVersion: appBundleVersion(appDir),
     },
     electronVersion: options.electronVersion,
-    source: sourceInfo(repoDir, options.env),
+    source: sourceInfo(repoDir, env),
     linuxTarget: linuxTargetInfo(target),
     packageProfile: packageProfile(target),
     linuxFeatures: {
       enabled: enabledLinuxFeatureIds({ featuresRoot }),
-      configPath: linuxFeaturesConfigPath(featuresRoot),
     },
   };
 }
@@ -249,7 +288,9 @@ if (require.main === module) {
 
 module.exports = {
   buildInfo,
+  isoTimestamp,
   packageProfile,
+  sanitizeGitRemoteUrl,
   sourceInfo,
   sourceInfoFromGit,
   writeBuildInfo,

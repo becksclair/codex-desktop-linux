@@ -226,6 +226,7 @@ test_update_builder_preserves_enabled_linux_features_config() {
     local app_dir="$workspace/app"
     local feature_config="$workspace/features.json"
     local staged_config="$root/opt/codex-desktop/update-builder/linux-features/features.json"
+    local source_info="$root/opt/codex-desktop/update-builder/.codex-linux/source-info.json"
 
     mkdir -p "$workspace"
     make_fake_app "$app_dir"
@@ -243,6 +244,8 @@ JSON
         export PACKAGE_NAME="codex-desktop"
         export UPDATER_SERVICE_SOURCE="$REPO_DIR/packaging/linux/codex-update-manager.service"
         export CODEX_LINUX_FEATURES_CONFIG="$feature_config"
+        export CODEX_LINUX_SOURCE_REMOTE="https://builder:secret-token@example.com/org/repo.git"
+        export SOURCE_DATE_EPOCH="1710000000"
 
         # shellcheck disable=SC1091
         source "$REPO_DIR/scripts/lib/package-common.sh"
@@ -259,6 +262,18 @@ const configPath = process.argv[2];
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 if (JSON.stringify(config) !== JSON.stringify({ enabled: ["example-feature"] })) {
   process.exit(1);
+}
+NODE
+
+    node - "$source_info" <<'NODE' || fail "Expected staged source info to be sanitized and reproducible"
+const fs = require("node:fs");
+const sourceInfoPath = process.argv[2];
+const info = JSON.parse(fs.readFileSync(sourceInfoPath, "utf8"));
+if (info.remote !== "https://example.com/org/repo.git") {
+  throw new Error(`unexpected remote: ${info.remote}`);
+}
+if (info.capturedAt !== new Date(1710000000 * 1000).toISOString()) {
+  throw new Error(`unexpected capturedAt: ${info.capturedAt}`);
 }
 NODE
 }
